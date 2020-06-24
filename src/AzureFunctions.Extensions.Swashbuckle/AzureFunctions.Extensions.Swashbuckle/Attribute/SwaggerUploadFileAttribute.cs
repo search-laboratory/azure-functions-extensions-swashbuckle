@@ -3,17 +3,19 @@
 namespace AzureFunctions.Extensions.Swashbuckle.Attribute
 {
     [AttributeUsage(AttributeTargets.Method, Inherited = false, AllowMultiple = true)]
-    public class QueryStringParameterAttribute : System.Attribute
+    public class SwaggerUploadFileAttribute : System.Attribute
     {
-        public QueryStringParameterAttribute(string name, string description)
+        public SwaggerUploadFileAttribute(string name, string description, string example = "")
         {
             Name = name;
             Description = description;
+            Example = example;
         }
 
         public string Name { get; }
-        public Type DataType { get; set; }
-        public string Description { get; }
-        public bool Required { get; set; } = false;
+
+        public string Description { get; set; }
+
+        public string Example { get; set; }
     }
 }

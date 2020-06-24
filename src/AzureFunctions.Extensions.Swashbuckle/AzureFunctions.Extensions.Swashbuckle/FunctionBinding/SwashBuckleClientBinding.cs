@@ -1,14 +1,15 @@
 ﻿using System;
 using System.Threading.Tasks;
+using AzureFunctions.Extensions.Swashbuckle.SwashBuckle;
 using Microsoft.Azure.WebJobs.Host.Bindings;
 using Microsoft.Azure.WebJobs.Host.Protocols;
 
-namespace AzureFunctions.Extensions.Swashbuckle
+namespace AzureFunctions.Extensions.Swashbuckle.FunctionBinding
 {
     internal class SwashBuckleClientBinding : IBinding
     {
-        private readonly Type _type;
         private readonly SwashbuckleConfig _config;
+        private readonly Type _type;
 
         public SwashBuckleClientBinding(SwashbuckleConfig config, Type type)
         {
@@ -38,15 +39,22 @@ namespace AzureFunctions.Extensions.Swashbuckle
         {
             private readonly object value;
 
-            public SwashBuckleClientValueProvider(object value) => this.value = value;
+            public SwashBuckleClientValueProvider(object value)
+            {
+                this.value = value;
+            }
 
             public Type Type => value.GetType();
 
-            public Task<object> GetValueAsync() => Task.FromResult(value);
+            public Task<object> GetValueAsync()
+            {
+                return Task.FromResult(value);
+            }
 
-            public string ToInvokeString() => value.ToString();
+            public string ToInvokeString()
+            {
+                return value.ToString();
+            }
         }
     }
-
-    
 }

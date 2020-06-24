@@ -6,6 +6,7 @@ using System.Net.Http;
 using System.Reflection;
 using System.Text.RegularExpressions;
 using AzureFunctions.Extensions.Swashbuckle.Attribute;
+using AzureFunctions.Extensions.Swashbuckle.Settings;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Abstractions;
@@ -13,56 +14,72 @@ using Microsoft.AspNetCore.Mvc.ApiExplorer;
 using Microsoft.AspNetCore.Mvc.Controllers;
 using Microsoft.AspNetCore.Mvc.Formatters;
 using Microsoft.AspNetCore.Mvc.ModelBinding;
+using Microsoft.AspNetCore.Mvc.ModelBinding.Metadata;
 using Microsoft.Azure.WebJobs;
 using Microsoft.Azure.WebJobs.Extensions.Http;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
-namespace AzureFunctions.Extensions.Swashbuckle
+namespace AzureFunctions.Extensions.Swashbuckle.SwashBuckle.Providers
 {
     internal class FunctionApiDescriptionProvider : IApiDescriptionGroupCollectionProvider
     {
+        private readonly ICompositeMetadataDetailsProvider _compositeMetadataDetailsProvider;
         private readonly IModelMetadataProvider _modelMetadataProvider;
+        private readonly SwaggerDocOptions _swaggerDocOptions;
         private readonly IOutputFormatter _outputFormatter;
-        private readonly Option _option;
 
         public FunctionApiDescriptionProvider(
-            IOptions<Option> functionsOptions,
+            IOptions<SwaggerDocOptions> functionsOptions,
             SwashBuckleStartupConfig startupConfig,
             IModelMetadataProvider modelMetadataProvider,
+            ICompositeMetadataDetailsProvider compositeMetadataDetailsProvider,
             IOutputFormatter outputFormatter,
-            IOptions<HttpOptions> httOptions)
+            IOptions<HttpOptions> httpOptions)
         {
-            _option = functionsOptions.Value;
+            _swaggerDocOptions = functionsOptions.Value;
             _modelMetadataProvider = modelMetadataProvider;
+            _compositeMetadataDetailsProvider = compositeMetadataDetailsProvider;
             _outputFormatter = outputFormatter;
 
+            var apiDescGroups = new Dictionary<string, List<ApiDescription>>();
             var methods = startupConfig.Assembly.GetTypes()
                 .SelectMany(t => t.GetMethods())
                 .Where(m => m.GetCustomAttributes(typeof(FunctionNameAttribute), false).Any())
                 .ToArray();
 
-            var apiDescGroups = new Dictionary<string, List<ApiDescription>>();
             foreach (var methodInfo in methods)
             {
                 if (!TryGetHttpTrigger(methodInfo, out var triggerAttribute))
                     continue;
 
                 var functionAttr =
-                    (FunctionNameAttribute)methodInfo.GetCustomAttribute(typeof(FunctionNameAttribute), false);
+                    (FunctionNameAttribute) methodInfo.GetCustomAttribute(typeof(FunctionNameAttribute), false);
                 var apiExplorerSettingsAttribute =
-                    (ApiExplorerSettingsAttribute)methodInfo.GetCustomAttribute(typeof(ApiExplorerSettingsAttribute), false) ??
-                    (ApiExplorerSettingsAttribute)methodInfo.DeclaringType.GetCustomAttribute(typeof(ApiExplorerSettingsAttribute), false);
+                    (ApiExplorerSettingsAttribute) methodInfo.GetCustomAttribute(typeof(ApiExplorerSettingsAttribute),
+                        false) ??
+                    (ApiExplorerSettingsAttribute) methodInfo.DeclaringType.GetCustomAttribute(
+                        typeof(ApiExplorerSettingsAttribute), false);
 
-                var prefix = string.IsNullOrWhiteSpace(httOptions.Value.RoutePrefix) ? "" : $"{httOptions.Value.RoutePrefix.TrimEnd('/')}/";
+                var prefix = string.IsNullOrWhiteSpace(httpOptions.Value.RoutePrefix)
+                    ? string.Empty
+                    : $"{httpOptions.Value.RoutePrefix.TrimEnd('/')}/";
+
                 string route;
-                if (_option.PrepandOperationWithRoutePrefix)
+
+                if (_swaggerDocOptions.PrependOperationWithRoutePrefix)
                 {
-                    route = $"{prefix}{(!string.IsNullOrWhiteSpace(triggerAttribute.Route) ? triggerAttribute.Route : functionAttr.Name)}";
+                    var routePart = !string.IsNullOrWhiteSpace(triggerAttribute.Route)
+                        ? triggerAttribute.Route
+                        : functionAttr.Name;
+
+                    route = $"{prefix}{(routePart)}";
                 }
                 else
                 {
-                    route = !string.IsNullOrWhiteSpace(triggerAttribute.Route) ? triggerAttribute.Route : functionAttr.Name;
+                    route = !string.IsNullOrWhiteSpace(triggerAttribute.Route)
+                        ? triggerAttribute.Route
+                        : functionAttr.Name;
                 }
 
                 var routes = new List<(string Route, string RemoveParamName)>();
@@ -70,28 +87,35 @@ namespace AzureFunctions.Extensions.Swashbuckle
                 var regex = new Regex("/\\{(?<paramName>\\w+)\\?\\}$");
                 var match = regex.Match(route);
 
+                var routeParamRemoveRegex = new Regex(":[a-zA-Z]+(\\(.*\\))?");
+                route = routeParamRemoveRegex.Replace(route, "");
+                
                 if (match.Success && match.Captures.Count == 1)
                 {
-                    routes.Add((route.Replace(match.Value, "").Replace("//", "/"), match.Groups["paramName"].ToString()));
+                    routes.Add(
+                        (route.Replace(match.Value, "").Replace("//", "/"), match.Groups["paramName"].ToString()));
                     routes.Add((route.Replace(match.Value, match.Value.Replace("?", "")), ""));
                 }
                 else
                 {
                     routes.Add((route, ""));
                 }
+
                 var verbs = triggerAttribute.Methods ??
-                            new[] { "get", "post", "delete", "head", "patch", "put", "options" };
+                            new[] {"get", "post", "delete", "head", "patch", "put", "options"};
 
 
                 for (var index = 0; index < routes.Count; index++)
                 {
-                    var r = routes[index];
+                    var routeTuple = routes[index];
                     var apiName = functionAttr.Name + (index == 0 ? "" : $"-{index}");
                     var items = verbs.Select(verb =>
-                        CreateDescription(methodInfo, r.Route, index, functionAttr, apiExplorerSettingsAttribute, verb, triggerAttribute.AuthLevel, r.RemoveParamName, verbs.Length > 1)).ToArray();
+                        CreateDescription(methodInfo, routeTuple.Route, index, functionAttr, apiExplorerSettingsAttribute, verb,
+                            triggerAttribute.AuthLevel, routeTuple.RemoveParamName, verbs.Length > 1)).ToArray();
 
-                    string groupName =
-                        (items.FirstOrDefault()?.ActionDescriptor as ControllerActionDescriptor)?.ControllerName ?? apiName;
+                    var groupName =
+                        (items.FirstOrDefault()?.ActionDescriptor as ControllerActionDescriptor)?.ControllerName ??
+                        apiName;
                     if (!apiDescGroups.ContainsKey(groupName))
                     {
                         apiDescGroups[groupName] = new List<ApiDescription>();
@@ -105,7 +129,7 @@ namespace AzureFunctions.Extensions.Swashbuckle
                 new ApiDescriptionGroupCollection(
                     new ReadOnlyCollection<ApiDescriptionGroup>(
                         apiDescGroups.Select(kv => new ApiDescriptionGroup(kv.Key, kv.Value)).ToList()
-                ), 1);
+                    ), 1);
         }
 
         public ApiDescriptionGroupCollection ApiDescriptionGroups { get; }
@@ -153,33 +177,35 @@ namespace AzureFunctions.Extensions.Swashbuckle
                     DisplayName = actionName,
                     ControllerTypeInfo = methodInfo.DeclaringType.GetTypeInfo(),
                     Parameters = new List<ParameterDescriptor>(),
-                    RouteValues = new Dictionary<string, string>()
+                    RouteValues = new Dictionary<string, string>
                     {
-                        {"controller", controllerName },
-                        {"action", actionName }
+                        {"controller", controllerName},
+                        {"action", actionName}
                     },
-                    ActionName = !string.IsNullOrEmpty(actionNamePrefix) ? actionName + actionNamePrefix : null,
+                    ActionName = !string.IsNullOrEmpty(actionNamePrefix) ? actionName + actionNamePrefix : null
                 },
                 RelativePath = route,
                 HttpMethod = verb.ToUpper()
             };
 
             var supportedMediaTypes = methodInfo.GetCustomAttributes<SupportedRequestFormatAttribute>()
-                .Select(x => new ApiRequestFormat { MediaType = x.MediaType }).ToList();
+                .Select(x => new ApiRequestFormat {MediaType = x.MediaType}).ToList();
+
+            SetupDefaultJsonFormatterIfNone(supportedMediaTypes);
+
             foreach (var supportedMediaType in supportedMediaTypes)
+            {
                 description.SupportedRequestFormats.Add(supportedMediaType);
+            }
 
             var parameters = GetParametersDescription(methodInfo, route).ToList();
-            foreach (var parameter in parameters)
+
+            foreach (var parameter in parameters.Where(parameter => parameter.Name != removeParamName))
             {
-                if (parameter.Name == removeParamName)
-                {
-                    continue;
-                }
                 description.ActionDescriptor.Parameters.Add(new ParameterDescriptor
                 {
                     Name = parameter.Name,
-                    ParameterType = parameter.Type,
+                    ParameterType = parameter.Type
                 });
                 description.ParameterDescriptions.Add(parameter);
             }
@@ -189,8 +215,7 @@ namespace AzureFunctions.Extensions.Swashbuckle
                 description.SupportedResponseTypes.Add(apiResponseType);
             }
 
-
-            if (_option.AddCodeParamater && authorizationLevel != AuthorizationLevel.Anonymous)
+            if (_swaggerDocOptions.AddCodeParameter && authorizationLevel != AuthorizationLevel.Anonymous)
             {
                 description.ParameterDescriptions.Add(new ApiParameterDescription
                 {
@@ -207,23 +232,39 @@ namespace AzureFunctions.Extensions.Swashbuckle
             return description;
         }
 
+        private static void SetupDefaultJsonFormatterIfNone(IList<ApiRequestFormat> supportedMediaTypes)
+        {
+            if (supportedMediaTypes.Count == 0)
+            {
+                supportedMediaTypes.Add(new ApiRequestFormat
+                {
+                    MediaType = "application/json"
+                });
+            }
+        }
+
         private IEnumerable<ApiResponseType> GetResponseTypes(MethodInfo methodInfo)
         {
             return methodInfo.GetCustomAttributes(typeof(ProducesResponseTypeAttribute))
                 .Select(customAttribute => customAttribute as ProducesResponseTypeAttribute)
-                .Select(responseType => new ApiResponseType
+                .Select(responseType =>
                 {
-                    ApiResponseFormats = new[]
+                    var isVoidResponseType = responseType.Type == typeof(void);
+                    
+                    return new ApiResponseType
                     {
-                        new ApiResponseFormat
+                        ApiResponseFormats = new[]
                         {
-                            Formatter = _outputFormatter,
-                            MediaType = "application/json"
-                        }
-                    },
-                    ModelMetadata = _modelMetadataProvider.GetMetadataForType(responseType.Type),
-                    Type = responseType.Type,
-                    StatusCode = responseType.StatusCode
+                            new ApiResponseFormat
+                            {
+                                Formatter = _outputFormatter,
+                                MediaType = "application/json"
+                            }
+                        },
+                        ModelMetadata = isVoidResponseType ? null : _modelMetadataProvider.GetMetadataForType(responseType.Type),
+                        Type = isVoidResponseType ? null : responseType.Type,
+                        StatusCode = responseType.StatusCode
+                    };
                 });
         }
 
@@ -253,7 +294,8 @@ namespace AzureFunctions.Extensions.Swashbuckle
                 var requestBodyTypeAttribute =
                     parameter.GetCustomAttribute(typeof(RequestBodyTypeAttribute)) as RequestBodyTypeAttribute;
 
-                if ((parameter.ParameterType == typeof(HttpRequestMessage) || parameter.ParameterType == typeof(HttpRequest))
+                if ((parameter.ParameterType == typeof(HttpRequestMessage) ||
+                     parameter.ParameterType == typeof(HttpRequest))
                     && requestBodyTypeAttribute == null)
                     continue;
 
@@ -274,7 +316,7 @@ namespace AzureFunctions.Extensions.Swashbuckle
                     : hasFromUriAttribute ? BindingSource.Query
                     : BindingSource.Body;
 
-                bool optional = bindingSource == BindingSource.Query || match.Value.Contains("?");
+                var optional = bindingSource == BindingSource.Query || match.Value.Contains("?");
 
                 yield return new ApiParameterDescription
                 {
@@ -283,8 +325,12 @@ namespace AzureFunctions.Extensions.Swashbuckle
                     Source = bindingSource,
                     RouteInfo = new ApiParameterRouteInfo
                     {
-                        IsOptional = optional,
-                    }
+                        IsOptional = optional
+                    },
+                    ModelMetadata = new DefaultModelMetadata(_modelMetadataProvider, _compositeMetadataDetailsProvider,
+                        new DefaultMetadataDetails(
+                            ModelMetadataIdentity.ForType(type),
+                            ModelAttributes.GetAttributesForType(type)))
                 };
             }
         }
@@ -298,7 +344,7 @@ namespace AzureFunctions.Extensions.Swashbuckle
             if (parameter.ParameterType == typeof(ILogger)) return true;
             if (parameter.ParameterType.IsAssignableFrom(typeof(ILogger))) return true;
             if (parameter.ParameterType.IsAssignableFrom(typeof(ISwashBuckleClient))) return true;
-            if (parameter.GetCustomAttributes().Any(attr => (attr is HttpTriggerAttribute))
+            if (parameter.GetCustomAttributes().Any(attr => attr is HttpTriggerAttribute)
                 && parameter.GetCustomAttributes().All(attr => !(attr is RequestBodyTypeAttribute))) return true;
             return false;
         }
